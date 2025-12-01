@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "213737086078",
+    "project_id": "invoicestats",
+    "storage_bucket": "invoicestats.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:213737086078:android:2252d1fa3c1290b6878c2f",
+        "android_client_info": {
+          "package_name": "com.wethaaq.invoicestats"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCD3d2yNCj0RV4ErUQBC9n4SWWj9gWxFOI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
