@@ -1,5 +1,5 @@
 // تطبيق Smart Invoice Scanner (المبسط لمشروع التخرج)
-// الوظائف: مصادقة Firebase، مسح الفواتير وتحليلها بـ Gemini Vision، تخزين محلي.
+// ** تم تعديل الكود ليتوافق بالكامل مع الحزمة google_generative_ai: ^0.4.7 **
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -50,7 +50,6 @@ class SimpleInvoice {
       id: json['id'] ?? UniqueKey().toString(),
       invoiceNumber: json['invoice_number'] ?? 'غير محدد',
       dateTime: json['date_time'] ?? 'غير محدد',
-      // تحويل القيمة إلى double، مع التعامل مع القيمة الصفرية أو null
       netValue: (json['net_value'] as num?)?.toDouble() ?? 0.0, 
       tax: (json['tax'] as num?)?.toDouble() ?? 0.0,
       total: (json['total'] as num?)?.toDouble() ?? 0.0,
@@ -331,6 +330,21 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
   // منطق التقاط الصورة ومعالجة Gemini
   // ====================================================================
 
+  void _showErrorDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(title, textAlign: TextAlign.right),
+          content: Text(content, textAlign: TextAlign.right),
+          actions: <Widget>[
+            TextButton(child: const Text('حسناً'), onPressed: () => Navigator.of(context).pop()),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _pickImage(ImageSource source) async {
     if (geminiApiKey == "YOUR_GEMINI_API_KEY_HERE") {
       _showErrorDialog('خطأ في الإعدادات',
@@ -357,19 +371,22 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
   Future<void> _processImage(XFile image) async {
     final imageBytes = await image.readAsBytes();
 
-    // 💡 تحديد مخطط JSON المطلوب (JSON Schema)
-    final jsonSchema = Schema(
-      type: Type.object,
-      properties: {
-        "invoice_number": Schema(type: Type.string, description: "رقم الفاتورة"),
-        "date_time": Schema(
-            type: Type.string, description: "تاريخ ووقت الفاتورة بصيغة YYYY-MM-DD HH:MM:SS"),
-        "net_value": Schema(type: Type.number, description: "قيمة الفاتورة بدون ضريبة (الصافي)"),
-        "tax": Schema(type: Type.number, description: "قيمة الضريبة المضافة"),
-        "total": Schema(type: Type.number, description: "المجموع النهائي للفاتورة")
+    // 💡 تحديد مخطط JSON المطلوب (JSON Schema) - مُعدّل ليتوافق مع الإصدار 0.4.7
+    // بناء المخطط كـ Map خام (raw Map)
+    final Map<String, dynamic> rawSchema = {
+      'type': 'object',
+      'properties': {
+        "invoice_number": {'type': 'string', 'description': "رقم الفاتورة"},
+        "date_time": {'type': 'string', 'description': "تاريخ ووقت الفاتورة بصيغة YYYY-MM-DD HH:MM:SS"},
+        "net_value": {'type': 'number', 'description': "قيمة الفاتورة بدون ضريبة (الصافي)"},
+        "tax": {'type': 'number', 'description': "قيمة الضريبة المضافة"},
+        "total": {'type': 'number', 'description': "المجموع النهائي للفاتورة"}
       },
-      required: ["invoice_number", "date_time", "net_value", "tax", "total"],
-    );
+      'required': ["invoice_number", "date_time", "net_value", "tax", "total"],
+    };
+    
+    // تحويل المخطط الخام إلى كائن Schema
+    final jsonSchema = Schema.fromMap(rawSchema);
 
     // توجيهات لنموذج Gemini لاستخراج JSON فقط
     const prompt =
@@ -381,10 +398,11 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
         // استخدام Part.data ليتوافق مع الإصدار 0.4.7
         Part.data(imageBytes, 'image/jpeg'), 
       ],
-      config: GenerateContentConfig(
-        responseMimeType: "application/json",
-        responseSchema: jsonSchema,
-      ),
+      // استخدام GenerateContentConfig.fromMap ليتوافق مع الإصدار 0.4.7
+      config: GenerateContentConfig.fromMap({
+        'response_mime_type': "application/json",
+        'response_schema': rawSchema, // استخدام الـ Map الخام هنا
+      }),
     );
 
     // فحص وتحليل استجابة Gemini
@@ -413,23 +431,8 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
   }
 
   // ====================================================================
-  // عرض النتائج ورسائل الخطأ
+  // عرض النتائج
   // ====================================================================
-
-  void _showErrorDialog(String title, String content) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(title, textAlign: TextAlign.right),
-          content: Text(content, textAlign: TextAlign.right),
-          actions: <Widget>[
-            TextButton(child: const Text('حسناً'), onPressed: () => Navigator.of(context).pop()),
-          ],
-        );
-      },
-    );
-  }
   
   void _showSuccessDialog(SimpleInvoice invoice) {
     showDialog(
