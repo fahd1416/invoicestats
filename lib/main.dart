@@ -1,26 +1,29 @@
 // تطبيق Smart Invoice Scanner (المبسط لمشروع التخرج)
-// ** تم تعديل الكود ليتوافق بالكامل مع الحزمة google_generative_ai: ^0.4.7 **
+// ** تم استبدال google_generative_ai بكود مخصص يستخدم HTTP مباشرة **
 
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'dart:typed_data';
+
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // 🚨🚨 التنبيه الأهم: الإعدادات 🚨🚨
 // 1. يجب أن يكون ملف firebase_options.dart مولدًا (باستخدام flutterfire configure).
-import 'firebase_options.dart'; 
+import 'auth_screen.dart';
+import 'firebase_options.dart';
+
 // 2. يجب استبدال هذا المتغير بمفتاح Gemini API الفعلي الذي نسخته.
-const String geminiApiKey = "AIzaSyAGAaOWCis3WJM3bQ46DYIRGU4WK1mtjkw"; // ⬅️ ضع المفتاح هنا
+const String geminiApiKey =
+    "AIzaSyAGAaOWCis3WJM3bQ46DYIRGU4WK1mtjkw"; // ⬅️ ضع المفتاح هنا
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // تهيئة Firebase
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const InvoiceScannerApp());
 }
 
@@ -35,7 +38,7 @@ class SimpleInvoice {
   final double netValue;
   final double tax;
   final double total;
-  
+
   SimpleInvoice({
     required this.id,
     required this.invoiceNumber,
@@ -50,24 +53,97 @@ class SimpleInvoice {
       id: json['id'] ?? UniqueKey().toString(),
       invoiceNumber: json['invoice_number'] ?? 'غير محدد',
       dateTime: json['date_time'] ?? 'غير محدد',
-      netValue: (json['net_value'] as num?)?.toDouble() ?? 0.0, 
+      netValue: (json['net_value'] as num?)?.toDouble() ?? 0.0,
       tax: (json['tax'] as num?)?.toDouble() ?? 0.0,
       total: (json['total'] as num?)?.toDouble() ?? 0.0,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'invoice_number': invoiceNumber,
-        'date_time': dateTime,
-        'net_value': netValue,
-        'tax': tax,
-        'total': total,
-      };
+    'id': id,
+    'invoice_number': invoiceNumber,
+    'date_time': dateTime,
+    'net_value': netValue,
+    'tax': tax,
+    'total': total,
+  };
 }
 
 // ====================================================================
-// ثانياً: خدمة التخزين المحلي (Local Storage Service)
+// ثانياً: خدمة Gemini AI المخصصة (Custom Gemini Service)
+// ====================================================================
+
+class GeminiService {
+  final String apiKey;
+  static const String baseUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models';
+
+  GeminiService({required this.apiKey});
+
+  /// استدعاء Gemini API مع صورة و JSON schema
+  Future<String?> generateContentWithImage({
+    required Uint8List imageBytes,
+    required String prompt,
+    required Map<String, dynamic> responseSchema,
+    String model = 'gemini-2.0-flash-exp',
+  }) async {
+    try {
+      // تحويل الصورة إلى base64
+      final base64Image = base64Encode(imageBytes);
+
+      // بناء الطلب
+      final requestBody = {
+        'contents': [
+          {
+            'parts': [
+              {'text': prompt},
+              {
+                'inline_data': {'mime_type': 'image/jpeg', 'data': base64Image},
+              },
+            ],
+          },
+        ],
+        'generationConfig': {
+          'response_mime_type': 'application/json',
+          'response_schema': responseSchema,
+        },
+      };
+
+      // إرسال الطلب
+      final url = Uri.parse('$baseUrl/$model:generateContent?key=$apiKey');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> jsonResponse = jsonDecode(response.body);
+
+        // استخراج النص من الاستجابة
+        final candidates = jsonResponse['candidates'] as List?;
+        if (candidates != null && candidates.isNotEmpty) {
+          final content = candidates[0]['content'];
+          final parts = content['parts'] as List?;
+          if (parts != null && parts.isNotEmpty) {
+            return parts[0]['text'] as String?;
+          }
+        }
+        return null;
+      } else {
+        print('Gemini API Error: ${response.statusCode}');
+        print('Response body: ${response.body}');
+        throw Exception('فشل الاتصال بـ Gemini API: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error in GeminiService: $e');
+      rethrow;
+    }
+  }
+}
+
+// ====================================================================
+// ثالثاً: خدمة التخزين المحلي (Local Storage Service)
 // ====================================================================
 
 class LocalStorageService {
@@ -84,14 +160,15 @@ class LocalStorageService {
 
   static Future<void> saveInvoices(List<SimpleInvoice> invoices) async {
     final prefs = await SharedPreferences.getInstance();
-    final List<Map<String, dynamic>> invoicesJson =
-        invoices.map((i) => i.toJson()).toList();
+    final List<Map<String, dynamic>> invoicesJson = invoices
+        .map((i) => i.toJson())
+        .toList();
     await prefs.setString(_keyInvoices, jsonEncode(invoicesJson));
   }
 }
 
 // ====================================================================
-// ثالثاً: هيكل التطبيق والمصادقة
+// رابعاً: هيكل التطبيق والمصادقة
 // ====================================================================
 
 class InvoiceScannerApp extends StatelessWidget {
@@ -109,10 +186,7 @@ class InvoiceScannerApp extends StatelessWidget {
       ),
       // لضمان اللغة العربية من اليمين لليسار في كل مكان
       builder: (context, child) {
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: child!,
-        );
+        return Directionality(textDirection: TextDirection.rtl, child: child!);
       },
       home: const AuthGate(),
     );
@@ -138,160 +212,7 @@ class AuthGate extends StatelessWidget {
 }
 
 // ====================================================================
-// رابعاً: شاشة المصادقة (Auth Screen)
-// ====================================================================
-
-class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
-
-  @override
-  State<AuthScreen> createState() => _AuthScreenState();
-}
-
-class _AuthScreenState extends State<AuthScreen> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  bool isLogin = true; // للتبديل بين تسجيل الدخول والتسجيل
-  String? _errorMessage;
-
-  Future<void> _authenticate() async {
-    setState(() => _errorMessage = null);
-    try {
-      if (isLogin) {
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: _emailController.text,
-          password: _passwordController.text,
-        );
-      } else {
-        await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: _emailController.text,
-          password: _passwordController.text,
-        );
-      }
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        if (e.code == 'user-not-found') {
-          _errorMessage = 'لم يتم العثور على هذا المستخدم.';
-        } else if (e.code == 'wrong-password') {
-          _errorMessage = 'كلمة المرور غير صحيحة.';
-        } else if (e.code == 'email-already-in-use') {
-          _errorMessage = 'هذا البريد الإلكتروني مُسجل بالفعل.';
-        } else if (e.code == 'invalid-email') {
-          _errorMessage = 'صيغة البريد الإلكتروني غير صحيحة.';
-        } else if (e.code == 'weak-password') {
-          _errorMessage = 'كلمة المرور ضعيفة جداً (أقل من 6 أحرف).';
-        } else {
-          _errorMessage = 'حدث خطأ في المصادقة: ${e.message}';
-        }
-      });
-    } catch (e) {
-      setState(() => _errorMessage = 'حدث خطأ غير متوقع.');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(isLogin ? 'تسجيل الدخول' : 'إنشاء حساب جديد'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
-        centerTitle: true,
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Icon(Icons.receipt_long, size: 80, color: Colors.teal),
-              const SizedBox(height: 20),
-              
-              Text(
-                'Smart Invoice Scanner',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.teal,
-                    ),
-              ),
-              const SizedBox(height: 30),
-
-              // حقل البريد الإلكتروني
-              TextField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'البريد الإلكتروني',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.email),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // حقل كلمة المرور
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'كلمة المرور',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.lock),
-                ),
-              ),
-              const SizedBox(height: 24),
-              
-              // عرض رسالة الخطأ
-              if (_errorMessage != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12.0),
-                  child: Text(
-                    _errorMessage!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                  ),
-                ),
-
-              // زر التسجيل/الدخول
-              ElevatedButton(
-                onPressed: _authenticate,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.teal,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                child: Text(
-                  isLogin ? 'تسجيل الدخول' : 'إنشاء حساب',
-                  style: const TextStyle(fontSize: 18),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              // زر التبديل
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    isLogin = !isLogin;
-                    _errorMessage = null;
-                  });
-                },
-                child: Text(
-                  isLogin ? 'ليس لديك حساب؟ قم بالتسجيل' : 'لديك حساب بالفعل؟ سجل الدخول',
-                  style: const TextStyle(color: Colors.teal, decoration: TextDecoration.underline),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// خامساً: شاشة الماسح الضوئي الرئيسية (Main Scanner Screen)
+// سادساً: شاشة الماسح الضوئي الرئيسية (Main Scanner Screen)
 // ====================================================================
 
 class InvoiceScannerScreen extends StatefulWidget {
@@ -305,13 +226,13 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
   List<SimpleInvoice> _invoices = [];
   bool _isLoading = false;
   final ImagePicker _picker = ImagePicker();
-  late final GenerativeModel _generativeModel;
+  late final GeminiService _geminiService;
 
   @override
   void initState() {
     super.initState();
-    // تهيئة نموذج Gemini
-    _generativeModel = GenerativeModel(model: 'gemini-2.5-flash', apiKey: geminiApiKey);
+    // تهيئة خدمة Gemini المخصصة
+    _geminiService = GeminiService(apiKey: geminiApiKey);
     _loadInvoices();
   }
 
@@ -338,7 +259,10 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
           title: Text(title, textAlign: TextAlign.right),
           content: Text(content, textAlign: TextAlign.right),
           actions: <Widget>[
-            TextButton(child: const Text('حسناً'), onPressed: () => Navigator.of(context).pop()),
+            TextButton(
+              child: const Text('حسناً'),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
           ],
         );
       },
@@ -347,11 +271,13 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
 
   Future<void> _pickImage(ImageSource source) async {
     if (geminiApiKey == "YOUR_GEMINI_API_KEY_HERE") {
-      _showErrorDialog('خطأ في الإعدادات',
-          'الرجاء استبدال مفتاح API في الكود بالمفتاح الفعلي أولاً.');
+      _showErrorDialog(
+        'خطأ في الإعدادات',
+        'الرجاء استبدال مفتاح API في الكود بالمفتاح الفعلي أولاً.',
+      );
       return;
     }
-    
+
     final XFile? image = await _picker.pickImage(source: source);
 
     if (image != null) {
@@ -359,8 +285,10 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
       try {
         await _processImage(image);
       } catch (e) {
-        _showErrorDialog('خطأ في التحليل',
-            'حدث خطأ أثناء التواصل مع Gemini. الرجاء التأكد من مفتاح API والإنترنت.');
+        _showErrorDialog(
+          'خطأ في التحليل',
+          'حدث خطأ أثناء التواصل مع Gemini. الرجاء التأكد من مفتاح API والإنترنت.',
+        );
         print('Gemini Error: $e');
       } finally {
         setState(() => _isLoading = false);
@@ -371,75 +299,85 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
   Future<void> _processImage(XFile image) async {
     final imageBytes = await image.readAsBytes();
 
-    // 💡 تحديد مخطط JSON المطلوب (JSON Schema) - مُعدّل ليتوافق مع الإصدار 0.4.7
-    // بناء المخطط كـ Map خام (raw Map)
-    final Map<String, dynamic> rawSchema = {
+    // 💡 تحديد مخطط JSON المطلوب (JSON Schema)
+    final Map<String, dynamic> responseSchema = {
       'type': 'object',
       'properties': {
         "invoice_number": {'type': 'string', 'description': "رقم الفاتورة"},
-        "date_time": {'type': 'string', 'description': "تاريخ ووقت الفاتورة بصيغة YYYY-MM-DD HH:MM:SS"},
-        "net_value": {'type': 'number', 'description': "قيمة الفاتورة بدون ضريبة (الصافي)"},
+        "date_time": {
+          'type': 'string',
+          'description': "تاريخ ووقت الفاتورة بصيغة YYYY-MM-DD HH:MM:SS",
+        },
+        "net_value": {
+          'type': 'number',
+          'description': "قيمة الفاتورة بدون ضريبة (الصافي)",
+        },
         "tax": {'type': 'number', 'description': "قيمة الضريبة المضافة"},
-        "total": {'type': 'number', 'description': "المجموع النهائي للفاتورة"}
+        "total": {'type': 'number', 'description': "المجموع النهائي للفاتورة"},
       },
       'required': ["invoice_number", "date_time", "net_value", "tax", "total"],
     };
-    
-    // تحويل المخطط الخام إلى كائن Schema
-    final jsonSchema = Schema.fromMap(rawSchema);
 
     // توجيهات لنموذج Gemini لاستخراج JSON فقط
     const prompt =
         'Extract ONLY the following financial data from the invoice image and return it as a structured JSON object. Focus on: invoice number, date and time (in YYYY-MM-DD HH:MM:SS format), net value (without tax), tax amount, and the final total.';
 
-    final response = await _generativeModel.generateContent(
-      [
-        Content.text(prompt),
-        // استخدام Part.data ليتوافق مع الإصدار 0.4.7
-        Part.data(imageBytes, 'image/jpeg'), 
-      ],
-      // استخدام GenerateContentConfig.fromMap ليتوافق مع الإصدار 0.4.7
-      config: GenerateContentConfig.fromMap({
-        'response_mime_type': "application/json",
-        'response_schema': rawSchema, // استخدام الـ Map الخام هنا
-      }),
+    // استدعاء خدمة Gemini المخصصة
+    final responseText = await _geminiService.generateContentWithImage(
+      imageBytes: imageBytes,
+      prompt: prompt,
+      responseSchema: responseSchema,
     );
 
     // فحص وتحليل استجابة Gemini
-    if (response.text != null && response.text!.isNotEmpty) {
+    if (responseText != null && responseText.isNotEmpty) {
       try {
         // تنظيف الاستجابة لضمان أنها JSON صالح
-        final cleanJson = response.text!.trim().replaceAll('```json', '').replaceAll('```', '');
+        final cleanJson = responseText
+            .trim()
+            .replaceAll('```json', '')
+            .replaceAll('```', '');
         final Map<String, dynamic> jsonResult = jsonDecode(cleanJson);
-        
-        final newInvoice = SimpleInvoice.fromJson({...jsonResult, 'id': DateTime.now().millisecondsSinceEpoch.toString()}); 
-        
+
+        final newInvoice = SimpleInvoice.fromJson({
+          ...jsonResult,
+          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+        });
+
         // حفظ الفاتورة الجديدة محلياً
-        final updatedInvoices = List<SimpleInvoice>.from(_invoices)..add(newInvoice);
+        final updatedInvoices = List<SimpleInvoice>.from(_invoices)
+          ..add(newInvoice);
         await LocalStorageService.saveInvoices(updatedInvoices);
 
         _showSuccessDialog(newInvoice);
         _loadInvoices(); // إعادة تحميل القائمة
       } catch (e) {
-        _showErrorDialog('خطأ في قراءة البيانات',
-            'تم استلام بيانات غير صالحة من Gemini. الرجاء المحاولة مرة أخرى.\nالاستجابة: ${response.text}');
+        _showErrorDialog(
+          'خطأ في قراءة البيانات',
+          'تم استلام بيانات غير صالحة من Gemini. الرجاء المحاولة مرة أخرى.\nالاستجابة: $responseText',
+        );
       }
     } else {
-       _showErrorDialog('لم يتم العثور على بيانات',
-            'لم يتمكن Gemini من استخراج بيانات من الصورة.');
+      _showErrorDialog(
+        'لم يتم العثور على بيانات',
+        'لم يتمكن Gemini من استخراج بيانات من الصورة.',
+      );
     }
   }
 
   // ====================================================================
   // عرض النتائج
   // ====================================================================
-  
+
   void _showSuccessDialog(SimpleInvoice invoice) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('تم تحليل الفاتورة بنجاح!', textAlign: TextAlign.right),
+          title: const Text(
+            'تم تحليل الفاتورة بنجاح!',
+            textAlign: TextAlign.right,
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -447,27 +385,48 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
               _buildResultRow('رقم الفاتورة:', invoice.invoiceNumber),
               _buildResultRow('التاريخ والوقت:', invoice.dateTime),
               const Divider(),
-              _buildResultRow('القيمة الصافية:', '${invoice.netValue.toStringAsFixed(2)}'),
-              _buildResultRow('الضريبة:', '${invoice.tax.toStringAsFixed(2)}'),
-              _buildResultRow('الإجمالي النهائي:', '${invoice.total.toStringAsFixed(2)}', isTotal: true),
+              _buildResultRow(
+                'القيمة الصافية:',
+                invoice.netValue.toStringAsFixed(2),
+              ),
+              _buildResultRow('الضريبة:', invoice.tax.toStringAsFixed(2)),
+              _buildResultRow(
+                'الإجمالي النهائي:',
+                invoice.total.toStringAsFixed(2),
+                isTotal: true,
+              ),
             ],
           ),
           actions: <Widget>[
-            TextButton(child: const Text('إغلاق'), onPressed: () => Navigator.pop(context)),
+            TextButton(
+              child: const Text('إغلاق'),
+              onPressed: () => Navigator.pop(context),
+            ),
           ],
         );
       },
     );
   }
-  
+
   Widget _buildResultRow(String label, String value, {bool isTotal = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(fontWeight: isTotal ? FontWeight.bold : FontWeight.normal)),
-          Text('$value ريال', style: TextStyle(fontWeight: isTotal ? FontWeight.bold : FontWeight.w600, color: isTotal ? Colors.teal : Colors.black)),
+          Text(
+            label,
+            style: TextStyle(
+              fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+          Text(
+            '$value ريال',
+            style: TextStyle(
+              fontWeight: isTotal ? FontWeight.bold : FontWeight.w600,
+              color: isTotal ? Colors.teal : Colors.black,
+            ),
+          ),
         ],
       ),
     );
@@ -500,7 +459,10 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
                 children: [
                   CircularProgressIndicator(color: Colors.teal),
                   SizedBox(height: 20),
-                  Text('جاري تحليل الفاتورة بواسطة الذكاء الاصطناعي...', style: TextStyle(fontSize: 16)),
+                  Text(
+                    'جاري تحليل الفاتورة بواسطة الذكاء الاصطناعي...',
+                    style: TextStyle(fontSize: 16),
+                  ),
                 ],
               ),
             )
@@ -515,22 +477,35 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
                       ElevatedButton.icon(
                         onPressed: () => _pickImage(ImageSource.camera),
                         icon: const Icon(Icons.camera_alt, color: Colors.white),
-                        label: const Text('التقاط صورة فاتورة جديدة', style: TextStyle(fontSize: 18, color: Colors.white)),
+                        label: const Text(
+                          'التقاط صورة فاتورة جديدة',
+                          style: TextStyle(fontSize: 18, color: Colors.white),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.teal,
                           minimumSize: const Size(double.infinity, 60),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                           elevation: 5,
                         ),
                       ),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
                         onPressed: () => _pickImage(ImageSource.gallery),
-                        icon: const Icon(Icons.photo_library, color: Colors.teal),
-                        label: const Text('رفع صورة من المعرض', style: TextStyle(fontSize: 18, color: Colors.teal)),
+                        icon: const Icon(
+                          Icons.photo_library,
+                          color: Colors.teal,
+                        ),
+                        label: const Text(
+                          'رفع صورة من المعرض',
+                          style: TextStyle(fontSize: 18, color: Colors.teal),
+                        ),
                         style: OutlinedButton.styleFrom(
                           minimumSize: const Size(double.infinity, 60),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                           side: const BorderSide(color: Colors.teal, width: 2),
                         ),
                       ),
@@ -540,10 +515,15 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
 
                 // قائمة الفواتير المحفوظة
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24.0,
+                    vertical: 8.0,
+                  ),
                   child: Text(
                     'آخر الفواتير المحفوظة (${_invoices.length})',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.teal.shade700),
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: Colors.teal.shade700,
+                    ),
                   ),
                 ),
                 Expanded(
@@ -552,12 +532,26 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
                       : ListView.builder(
                           itemCount: _invoices.length,
                           itemBuilder: (context, index) {
-                            final invoice = _invoices.reversed.toList()[index]; // الأحدث أولاً
+                            final invoice = _invoices.reversed
+                                .toList()[index]; // الأحدث أولاً
                             return ListTile(
-                              leading: const Icon(Icons.receipt, color: Colors.teal),
-                              title: Text('رقم الفاتورة: ${invoice.invoiceNumber}'),
-                              subtitle: Text('التاريخ: ${invoice.dateTime.split(' ')[0]} | الصافي: ${invoice.netValue.toStringAsFixed(2)} ريال'),
-                              trailing: Text('الإجمالي:\n${invoice.total.toStringAsFixed(2)} ريال', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
+                              leading: const Icon(
+                                Icons.receipt,
+                                color: Colors.teal,
+                              ),
+                              title: Text(
+                                'رقم الفاتورة: ${invoice.invoiceNumber}',
+                              ),
+                              subtitle: Text(
+                                'التاريخ: ${invoice.dateTime.split(' ')[0]} | الصافي: ${invoice.netValue.toStringAsFixed(2)} ريال',
+                              ),
+                              trailing: Text(
+                                'الإجمالي:\n${invoice.total.toStringAsFixed(2)} ريال',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                               onTap: () {
                                 _showSuccessDialog(invoice); // عرض التفاصيل
                               },
@@ -573,12 +567,13 @@ class _InvoiceScannerScreenState extends State<InvoiceScannerScreen> {
             ),
     );
   }
-  
+
   Future<void> _deleteInvoice(String id) async {
     final updatedList = _invoices.where((i) => i.id != id).toList();
     await LocalStorageService.saveInvoices(updatedList);
     _loadInvoices(); // إعادة تحميل القائمة
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم حذف الفاتورة.')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('تم حذف الفاتورة.')));
   }
 }
