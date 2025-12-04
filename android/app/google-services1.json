@@ -12,16 +12,7 @@
           "package_name": "com.wethaaq.invoicestats"
         }
       },
-      "oauth_client": [
-        {
-          "client_id": "213737086078-placeholder.apps.googleusercontent.com",
-          "client_type": 1,
-          "android_info": {
-            "package_name": "com.wethaaq.invoicestats",
-            "certificate_hash": "54789d75ada0d93b4b4074fd7603828fdd772e9b"
-          }
-        }
-      ],
+      "oauth_client": [],
       "api_key": [
         {
           "current_key": "AIzaSyCD3d2yNCj0RV4ErUQBC9n4SWWj9gWxFOI"
